@@ -1,0 +1,16 @@
+# Khoá API và cấu hình riêng: KHÔNG đưa lên GitHub
+config.json
+.env
+.env.*
+
+# Môi trường ảo và bộ nhớ đệm Python
+.venv/
+__pycache__/
+
+# Video đầu vào và các file kết quả
+*.mp4
+*.mov
+*.mkv
+*.webm
+*_vietsub.srt
+*_loi-thoai.txt

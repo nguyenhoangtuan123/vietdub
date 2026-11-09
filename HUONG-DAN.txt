@@ -1,0 +1,80 @@
+VIETDUB - LỒNG TIẾNG VIỆT CHO VIDEO DOUYIN
+==========================================
+
+Kéo thả video tiếng Trung vào file .bat, nhận lại:
+  - <tên>_vietdub.mp4     video đã lồng tiếng Việt (tiếng gốc được giảm nhỏ khi có lời đọc)
+  - <tên>_vietsub.srt     phụ đề tiếng Việt, nhập vào CapCut được
+  - <tên>_loi-thoai.txt   lời gốc và lời dịch từng câu, để kiểm tra
+
+
+CÀI ĐẶT (làm 1 lần)
+-------------------
+1. Cài Python 3.10 trở lên từ python.org (khi cài nhớ tick "Add python.exe to PATH").
+2. Cài ffmpeg: mở PowerShell, gõ
+       winget install Gyan.FFmpeg
+   rồi ĐÓNG và MỞ LẠI PowerShell.
+3. Giải nén thư mục vietdub ra một chỗ cố định, ví dụ D:\vietdub
+4. Trong PowerShell, gõ:
+       cd D:\vietdub
+       python -m venv .venv
+       .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+   (Hai file .bat tự dùng môi trường ảo .venv này. Chạy bằng lệnh thì dùng
+    .\.venv\Scripts\python.exe vietdub.py "video.mp4" thay cho python.)
+5. Lấy Gemini API key tại aistudio.google.com/apikey. Mở config.json bằng Notepad,
+   dán key vào dòng "gemini_api_key", lưu lại. (Hoặc đặt biến môi trường GEMINI_API_KEY
+   để không phải ghi key vào file.)
+   Key dùng cho bước dịch. Chép lời chạy trên máy và giọng đọc (edge) đều miễn phí,
+   nên không cần OpenAI key. Lần chạy đầu tiên sẽ tải model chép lời khoảng 500 MB.
+
+
+CÁCH DÙNG
+---------
+- Kéo thả 1 hoặc nhiều video vào  lam-video.bat
+- Muốn có phụ đề tiếng Việt gắn sẵn trên hình: kéo vào  lam-video-co-phu-de.bat
+  (lâu hơn vì phải xuất lại hình; phụ đề có nền tối nên che được phần lớn chữ Trung ở cuối khung)
+- Chép lời + dịch mất khoảng 1 phút. Phần chậm là giọng đọc Edge: dịch vụ này hay trả lỗi
+  tạm thời nên script tự thử lại nhiều lần (đo thử: video 87 giây mất khoảng 11 phút).
+  Câu nào vẫn không đọc được thì giữ tiếng gốc và được ghi rõ trong file _loi-thoai.txt.
+
+Chạy bằng lệnh nếu muốn tuỳ chỉnh:
+       python vietdub.py "video.mp4" --giong vi-VN-NamMinhNeural
+       python vietdub.py "video.mp4" --tts openai
+       python vietdub.py "video.mp4" --dich openai
+       python vietdub.py *.mp4 --out-dir D:\da-long-tieng
+
+
+TUỲ CHỈNH TRONG config.json
+---------------------------
+dich_bang              gemini (mặc định) hoặc openai
+model_dich_gemini      gemini-3.6-flash (mặc định); muốn rẻ hơn: gemini-3.5-flash-lite
+stt                    local (mặc định, miễn phí) hoặc openai
+local_whisper_device   cpu (mặc định, ổn định) hoặc cuda (cần cài CUDA 12 + cuBLAS)
+giong_edge             vi-VN-HoaiMyNeural (nữ) hoặc vi-VN-NamMinhNeural (nam)
+toc_do_edge            tốc độ đọc, VD "+10%", "+20%", "-5%"
+am_luong_goc_khi_doc   tiếng gốc khi đang có lời đọc: 0 = tắt hẳn, 0.12 = nhỏ (mặc định)
+am_luong_goc_nen       tiếng gốc ở đoạn không có lời: 0.9 (giữ nhạc nền)
+toc_do_toi_da          câu dịch dài hơn chỗ trống sẽ được đọc nhanh hơn, tối đa x1.5
+gan_phu_de             true = luôn gắn phụ đề lên hình
+
+
+LƯU Ý
+-----
+- Dịch bằng Gemini đi qua endpoint tương thích OpenAI của Google (Google còn ghi là beta).
+  Nếu gặp lỗi lạ, thử "--dich openai" (cần openai_api_key) hoặc đổi model_dich_gemini.
+  Gói miễn phí của Google có giới hạn tốc độ; script tự thử lại khi bị chặn tạm thời.
+- Chép lời mặc định chạy trên máy (faster-whisper). Muốn dùng whisper-1 của OpenAI thì
+  đổi "stt" thành "openai" và điền openai_api_key. OpenAI sẽ ngừng chạy whisper-1 từ
+  26/02/2027 và các model đọc giọng từ 06/01/2027.
+- Giọng edge dùng dịch vụ đọc của Microsoft Edge, miễn phí nhưng không chính thức,
+  nếu một ngày bị lỗi thì đổi "tts" thành "openai".
+- Video gốc có chữ Trung in sẵn trên hình thì công cụ không xoá được, chỉ che bớt bằng phụ đề có nền.
+- Luôn mở file _loi-thoai.txt kiểm tra lời dịch: giá, thông số dễ sai.
+- TikTok hạn chế hiển thị video lấy lại của người khác mà không thêm sáng tạo. Nên dùng
+  cho video đã xin phép tác giả, ghi nguồn, và chèn thêm nhận xét riêng của bạn.
+
+
+DÙNG TỪ n8n (tuỳ chọn)
+---------------------
+n8n 2.x tắt sẵn node Execute Command. Muốn gọi script từ n8n, đặt biến môi trường
+NODES_EXCLUDE=[] trước khi chạy n8n, rồi dùng node Execute Command với lệnh:
+       python D:\vietdub\vietdub.py "D:\video\ten-file.mp4"

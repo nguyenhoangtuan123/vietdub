@@ -1,0 +1,7 @@
+numpy
+requests
+edge-tts
+# Chép lời miễn phí trên máy (stt = local, là mặc định). Xoá dòng này nếu dùng stt = openai
+faster-whisper
+# faster-whisper 1.2.1 chưa tương thích av 19 (lỗi "metadata_errors"), nên giữ av dưới 19
+av<19

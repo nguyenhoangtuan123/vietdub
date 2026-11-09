@@ -1,0 +1,32 @@
+{
+  "_huong_dan": "Chỉ cần điền gemini_api_key (lấy ở aistudio.google.com/apikey). Các dòng khác để mặc định cũng chạy được. Có thể đặt key bằng biến môi trường GEMINI_API_KEY thay vì ghi vào file này.",
+  "gemini_api_key": "",
+
+  "_dich": "Dịch bằng: gemini (Google) hoặc openai. Model Gemini mặc định gemini-3.6-flash; muốn rẻ hơn thì đổi thành gemini-3.5-flash-lite",
+  "dich_bang": "gemini",
+  "model_dich_gemini": "gemini-3.6-flash",
+
+  "_stt": "Chép lời: local (miễn phí, chạy trên máy, cần pip install faster-whisper) hoặc openai (cần openai_api_key, OpenAI ngừng chạy whisper-1 từ 26/02/2027)",
+  "stt": "local",
+  "local_whisper_model": "small",
+  "_whisper_device": "Thiết bị chép lời: cpu (ổn định, mặc định), cuda (cần cài CUDA 12 + cuBLAS, nhanh hơn) hoặc auto",
+  "local_whisper_device": "cpu",
+
+  "_tts": "Giọng đọc: edge (miễn phí, giọng Việt tự nhiên) hoặc openai (cần openai_api_key, OpenAI ngừng chạy từ 06/01/2027)",
+  "tts": "edge",
+  "_giong": "vi-VN-HoaiMyNeural = giọng nữ, vi-VN-NamMinhNeural = giọng nam",
+  "giong_edge": "vi-VN-HoaiMyNeural",
+  "toc_do_edge": "+10%",
+  "giong_openai": "coral",
+
+  "_openai": "Chỉ cần điền nếu chọn openai cho dich_bang, stt hoặc tts",
+  "openai_api_key": "",
+  "model_dich": "gpt-5-mini",
+
+  "_am_luong": "Tiếng gốc khi có lời đọc (0 = tắt hẳn) và khi không có lời",
+  "am_luong_goc_khi_doc": 0.12,
+  "am_luong_goc_nen": 0.9,
+
+  "toc_do_toi_da": 1.5,
+  "gan_phu_de": false
+}
