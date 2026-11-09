@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -24,6 +25,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import requests
@@ -64,6 +66,23 @@ DEFAULTS = {
 
 CHARS_PER_SEC = 14  # tốc độ đọc tiếng Việt ước lượng
 
+# Báo tiến độ cho giao diện web: (mã bước, tỉ lệ 0..1 trong bước, thông điệp).
+# Các bước: tach_am, chep_loi, dich, doc_giong, ghep_am, xuat_video
+ProgressFn = Callable[[str, float, str], None]
+CancelFn = Callable[[], bool]
+
+
+class Cancelled(Exception):
+    """Người dùng đã huỷ việc đang chạy."""
+
+
+def _no_progress(step: str, frac: float, msg: str) -> None:
+    pass
+
+
+def _never() -> bool:
+    return False
+
 
 # ---------------------------------------------------------------- tiện ích
 
@@ -72,8 +91,8 @@ def log(msg: str) -> None:
 
 
 def die(msg: str) -> None:
-    print(f"\nLỖI: {msg}", file=sys.stderr, flush=True)
-    sys.exit(1)
+    # SystemExit mang theo thông điệp: dòng lệnh in ra stderr và thoát mã 1, máy chủ web đọc được từ e.code
+    sys.exit(f"\nLỖI: {msg}")
 
 
 def run(cmd: list[str], cwd: str | None = None) -> bytes:
@@ -409,97 +428,162 @@ def main() -> None:
         sys.exit(1)
 
 
+def _check_cancel(cancelled: CancelFn) -> None:
+    if cancelled():
+        raise Cancelled("Đã huỷ.")
+
+
+def analyze(video: Path, cfg: dict, work: Path, on_progress: ProgressFn = _no_progress,
+            cancelled: CancelFn = _never) -> tuple[list[dict], float]:
+    """Giai đoạn 1: tách âm thanh, chép lời, dịch.
+    Trả về (các đoạn lời kèm bản dịch, thời lượng video). Dùng được cả từ dòng lệnh lẫn từ web."""
+    if not video.exists():
+        raise RuntimeError(f"Không thấy file {video}")
+    dur, has_audio = probe(video)
+    if not has_audio:
+        raise RuntimeError("Video không có âm thanh nên không có gì để dịch.")
+    msg = f"Thời lượng {dur:.1f}s. Đang tách âm thanh..."
+    log(msg)
+    on_progress("tach_am", 0.0, msg)
+    audio = work / "audio.mp3"
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000",
+         "-b:a", "48k", str(audio)])
+    if audio.stat().st_size > 24 * 1024 * 1024 and cfg["stt"] == "openai":
+        raise RuntimeError("Âm thanh quá dài cho OpenAI (giới hạn 25 MB). Dùng --stt local hoặc cắt ngắn video.")
+    _check_cancel(cancelled)
+
+    log(f"Đang chép lời tiếng Trung ({cfg['stt']})...")
+    on_progress("chep_loi", 0.0, "Đang chép lời tiếng Trung...")
+    segs = (transcribe_local if cfg["stt"] == "local" else transcribe_openai)(audio, cfg)
+    segs = merge_short(segs)
+    if not segs:
+        raise RuntimeError("Không nghe thấy lời thoại nào trong video.")
+    _check_cancel(cancelled)
+
+    msg = f"Có {len(segs)} đoạn lời. Đang dịch..."
+    log(msg)
+    on_progress("dich", 0.0, msg)
+    translate(segs, cfg)
+    return segs, dur
+
+
+def _tts_cache_file(cache: Path | None, cfg: dict, text: str, ext: str) -> Path | None:
+    """Đường dẫn file nhớ tạm cho một câu đọc (None nếu không dùng bộ nhớ đệm).
+    Khoá theo giọng, tốc độ và nội dung, nên sửa một câu chỉ phải đọc lại đúng câu đó."""
+    if cache is None:
+        return None
+    cache.mkdir(parents=True, exist_ok=True)
+    voice = cfg["giong_edge"] if cfg["tts"] == "edge" else cfg["giong_openai"]
+    key = hashlib.sha1(f"{cfg['tts']}|{voice}|{cfg['toc_do_edge']}|{text}".encode("utf-8")).hexdigest()
+    return cache / f"{key}.{ext}"
+
+
+def render(video: Path, segs: list[dict], dur: float, cfg: dict, out_dir: Path, stem: str, work: Path,
+           on_progress: ProgressFn = _no_progress, cancelled: CancelFn = _never,
+           tts_cache: Path | None = None) -> dict[str, Path]:
+    """Giai đoạn 2: đọc giọng, ghép âm thanh, xuất video + phụ đề + bảng lời thoại.
+    Trả về {"video": ..., "srt": ..., "txt": ...}. `segs[i]["vi"]` có thể đã được người dùng sửa.
+    Nếu có `tts_cache`, câu nào đã đọc thành công trước đó sẽ được dùng lại."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    n = len(segs)
+    for s in segs:
+        s["vi"] = str(s.get("vi") or "").strip()
+        for k in ("tts_loi", "tempo", "dub_start", "dub_end"):
+            s.pop(k, None)
+
+    log(f"Đang đọc giọng ({cfg['tts']})...")
+    on_progress("doc_giong", 0.0, "Đang đọc giọng...")
+    tts = tts_edge if cfg["tts"] == "edge" else tts_openai
+    clips: list[Path | None] = []
+    failed = 0
+    for i, s in enumerate(segs):
+        _check_cancel(cancelled)
+        if not s["vi"]:
+            clips.append(None)
+            continue
+        ext = "mp3" if cfg["tts"] == "edge" else "wav"
+        p = work / f"tts_{i:03}.{ext}"
+        cached = _tts_cache_file(tts_cache, cfg, s["vi"], ext)
+        try:
+            if cached is not None and cached.exists():
+                clips.append(cached)
+            else:
+                tts(s["vi"], p, cfg)
+                if cached is not None:
+                    shutil.copyfile(p, cached)
+                clips.append(p)
+        except RuntimeError as e:
+            # một câu lỗi không nên làm hỏng cả video: giữ tiếng gốc ở đoạn đó và ghi vào báo cáo
+            clips.append(None)
+            s["tts_loi"] = True
+            failed += 1
+            log(f"Không đọc được đoạn {i + 1}/{n}, giữ tiếng gốc ở đoạn này ({e})")
+        print(f"  {i + 1}/{n}", end="\r", flush=True)
+        on_progress("doc_giong", (i + 1) / n, f"Đang đọc giọng {i + 1}/{n}")
+    if all(c is None for c in clips):
+        if failed:
+            raise RuntimeError("Không đọc được đoạn nào, giọng đọc đang lỗi. Thử lại sau ít phút hoặc đổi --tts.")
+        raise RuntimeError("Không còn đoạn lời nào để đọc giọng.")
+    if failed:
+        log(f"CẢNH BÁO: {failed} đoạn không đọc được, xem file _loi-thoai.txt.")
+    _check_cancel(cancelled)
+
+    log("Đang ghép âm thanh...")
+    on_progress("ghep_am", 0.0, "Đang ghép âm thanh...")
+    mix = build_audio(segs, clips, video, dur, True, cfg)
+    wav = work / "mix.wav"
+    write_wav(wav, mix)
+    _check_cancel(cancelled)
+
+    # phụ đề theo thời điểm đọc thực tế
+    for s in segs:
+        s.setdefault("dub_start", s["start"])
+        s.setdefault("dub_end", s["end"])
+    sub_segs = [{"start": s["dub_start"], "end": max(s["dub_end"], s["dub_start"] + 0.8), "vi": s["vi"]}
+                for s in segs]
+    srt_out = out_dir / f"{stem}_vietsub.srt"
+    write_srt(srt_out, sub_segs, "vi")
+
+    out = out_dir / f"{stem}_vietdub.mp4"
+    log("Đang xuất video...")
+    on_progress("xuat_video", 0.0, "Đang xuất video...")
+    if cfg["gan_phu_de"]:
+        shutil.copy(srt_out, work / "sub.srt")
+        style = ("FontName=Arial,FontSize=13,PrimaryColour=&H00FFFFFF,BackColour=&H99000000,"
+                 "BorderStyle=3,Outline=1,Shadow=0,MarginV=40,Alignment=2")
+        run(["ffmpeg", "-v", "error", "-y", "-i", str(video.resolve()), "-i", str(wav),
+             "-map", "0:v:0", "-map", "1:a:0", "-vf", f"subtitles=sub.srt:force_style='{style}'",
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+             "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-shortest", str(out.resolve())],
+            cwd=str(work))
+    else:
+        run(["ffmpeg", "-v", "error", "-y", "-i", str(video), "-i", str(wav),
+             "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+             "-movflags", "+faststart", "-shortest", str(out)])
+
+    # bảng lời thoại để kiểm tra/sửa
+    report = out_dir / f"{stem}_loi-thoai.txt"
+    with open(report, "w", encoding="utf-8") as f:
+        for s in segs:
+            note = f"  (tăng tốc x{s['tempo']})" if s.get("tempo", 1) > 1.01 else ""
+            if s.get("tts_loi"):
+                note = "  (KHÔNG CÓ GIỌNG ĐỌC: giữ tiếng gốc)"
+            f.write(f"[{srt_time(s['start'])}] {s['zh']}\n    → {s['vi']}{note}\n")
+    on_progress("xuat_video", 1.0, "Hoàn tất")
+    return {"video": out, "srt": srt_out, "txt": report}
+
+
 def process(video: Path, cfg: dict, out_dir: Path | None, keep: bool) -> None:
     if not video.exists():
         raise RuntimeError(f"Không thấy file {video}")
     out_dir = out_dir or video.parent
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stem = video.stem
     tmp = Path(tempfile.mkdtemp(prefix="vietdub_"))
     t0 = time.time()
     log(f"=== {video.name} ===")
     try:
-        dur, has_audio = probe(video)
-        if not has_audio:
-            raise RuntimeError("Video không có âm thanh nên không có gì để dịch.")
-        log(f"Thời lượng {dur:.1f}s. Đang tách âm thanh...")
-        audio = tmp / "audio.mp3"
-        run(["ffmpeg", "-v", "error", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000",
-             "-b:a", "48k", str(audio)])
-        if audio.stat().st_size > 24 * 1024 * 1024 and cfg["stt"] == "openai":
-            raise RuntimeError("Âm thanh quá dài cho OpenAI (giới hạn 25 MB). Dùng --stt local hoặc cắt ngắn video.")
-
-        log(f"Đang chép lời tiếng Trung ({cfg['stt']})...")
-        segs = (transcribe_local if cfg["stt"] == "local" else transcribe_openai)(audio, cfg)
-        segs = merge_short(segs)
-        if not segs:
-            raise RuntimeError("Không nghe thấy lời thoại nào trong video.")
-        log(f"Có {len(segs)} đoạn lời. Đang dịch...")
-        translate(segs, cfg)
-
-        log(f"Đang đọc giọng ({cfg['tts']})...")
-        tts = tts_edge if cfg["tts"] == "edge" else tts_openai
-        clips: list[Path | None] = []
-        failed = 0
-        for i, s in enumerate(segs):
-            if not s["vi"]:
-                clips.append(None)
-                continue
-            p = tmp / f"tts_{i:03}.{'mp3' if cfg['tts'] == 'edge' else 'wav'}"
-            try:
-                tts(s["vi"], p, cfg)
-                clips.append(p)
-            except RuntimeError as e:
-                # một câu lỗi không nên làm hỏng cả video: giữ tiếng gốc ở đoạn đó và ghi vào báo cáo
-                clips.append(None)
-                s["tts_loi"] = True
-                failed += 1
-                log(f"Không đọc được đoạn {i + 1}/{len(segs)}, giữ tiếng gốc ở đoạn này ({e})")
-            print(f"  {i + 1}/{len(segs)}", end="\r", flush=True)
-        if failed:
-            if all(c is None for c in clips):
-                raise RuntimeError("Không đọc được đoạn nào, giọng đọc đang lỗi. Thử lại sau ít phút hoặc đổi --tts.")
-            log(f"CẢNH BÁO: {failed} đoạn không đọc được, xem file _loi-thoai.txt.")
-
-        log("Đang ghép âm thanh...")
-        mix = build_audio(segs, clips, video, dur, has_audio, cfg)
-        wav = tmp / "mix.wav"
-        write_wav(wav, mix)
-
-        # phụ đề theo thời điểm đọc thực tế
-        for s in segs:
-            s.setdefault("dub_start", s["start"])
-            s.setdefault("dub_end", s["end"])
-        sub_segs = [{"start": s["dub_start"], "end": max(s["dub_end"], s["dub_start"] + 0.8), "vi": s["vi"]}
-                    for s in segs]
-        srt_out = out_dir / f"{stem}_vietsub.srt"
-        write_srt(srt_out, sub_segs, "vi")
-
-        out = out_dir / f"{stem}_vietdub.mp4"
-        log("Đang xuất video...")
-        if cfg["gan_phu_de"]:
-            shutil.copy(srt_out, tmp / "sub.srt")
-            style = ("FontName=Arial,FontSize=13,PrimaryColour=&H00FFFFFF,BackColour=&H99000000,"
-                     "BorderStyle=3,Outline=1,Shadow=0,MarginV=40,Alignment=2")
-            run(["ffmpeg", "-v", "error", "-y", "-i", str(video.resolve()), "-i", str(wav),
-                 "-map", "0:v:0", "-map", "1:a:0", "-vf", f"subtitles=sub.srt:force_style='{style}'",
-                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-shortest", str(out.resolve())],
-                cwd=str(tmp))
-        else:
-            run(["ffmpeg", "-v", "error", "-y", "-i", str(video), "-i", str(wav),
-                 "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                 "-movflags", "+faststart", "-shortest", str(out)])
-
-        # bảng lời thoại để kiểm tra/sửa
-        report = out_dir / f"{stem}_loi-thoai.txt"
-        with open(report, "w", encoding="utf-8") as f:
-            for s in segs:
-                note = f"  (tăng tốc x{s['tempo']})" if s.get("tempo", 1) > 1.01 else ""
-                if s.get("tts_loi"):
-                    note = "  (KHÔNG CÓ GIỌNG ĐỌC: giữ tiếng gốc)"
-                f.write(f"[{srt_time(s['start'])}] {s['zh']}\n    → {s['vi']}{note}\n")
-        log(f"Xong sau {time.time() - t0:.0f}s:\n    {out}\n    {srt_out}\n    {report}")
+        segs, dur = analyze(video, cfg, tmp)
+        res = render(video, segs, dur, cfg, out_dir, video.stem, tmp)
+        log(f"Xong sau {time.time() - t0:.0f}s:\n    {res['video']}\n    {res['srt']}\n    {res['txt']}")
     finally:
         if keep:
             log(f"Giữ thư mục tạm: {tmp}")

@@ -2,10 +2,20 @@
 config.json
 .env
 .env.*
+!.env.example
 
 # Môi trường ảo và bộ nhớ đệm Python
 .venv/
 __pycache__/
+
+# Web: dữ liệu việc đang xử lý của máy chủ, thư viện và bản build của giao diện
+server/jobs/
+web/node_modules/
+web/.next/
+.env*.local
+
+# Cấu hình xem thử riêng của máy này
+.claude/
 
 # Video đầu vào và các file kết quả
 *.mp4

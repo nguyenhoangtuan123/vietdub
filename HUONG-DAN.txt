@@ -73,6 +73,16 @@ LƯU Ý
   cho video đã xin phép tác giả, ghi nguồn, và chèn thêm nhận xét riêng của bạn.
 
 
+DÙNG BẰNG TRANG WEB (tuỳ chọn)
+------------------------------
+Có trang web để thả video, xem tiến độ, sửa lời dịch rồi mới đọc giọng, nghe thử và tải kết quả.
+1. Cài Node.js bản LTS từ nodejs.org (một lần).
+2. Bấm đúp  chay-web.bat  (lần đầu sẽ tự cài thư viện, hơi lâu). Hai cửa sổ đen hiện ra là máy
+   chủ và giao diện, đừng đóng khi đang dùng. Trình duyệt tự mở http://localhost:3000
+3. Tắt: đóng hai cửa sổ đen đó.
+Chi tiết cấu hình và cách đưa lên Vercel xem README.md.
+
+
 DÙNG TỪ n8n (tuỳ chọn)
 ---------------------
 n8n 2.x tắt sẵn node Execute Command. Muốn gọi script từ n8n, đặt biến môi trường

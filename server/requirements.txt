@@ -1,0 +1,4 @@
+# Cài thêm cho máy chủ web (ngoài requirements.txt ở thư mục gốc)
+fastapi
+uvicorn
+python-multipart
